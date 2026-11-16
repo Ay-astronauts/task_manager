@@ -1,0 +1,26 @@
+create extension if not exists "uuid-ossp";
+create type public.workspace_role as enum ('owner','admin','member');
+create type public.task_priority as enum ('Low','Medium','High','Urgent');
+create type public.task_status as enum ('To Do','In Progress','In Review','Done');
+create type public.recurrence_rule as enum ('None','Daily','Weekly','Monthly');
+
+create table public.profiles (id uuid primary key references auth.users on delete cascade, username text unique not null, full_name text not null, avatar_url text, created_at timestamptz not null default now());
+create table public.workspaces (id uuid primary key default uuid_generate_v4(), name text not null, owner_id uuid not null references public.profiles(id), created_at timestamptz not null default now());
+create table public.workspace_members (workspace_id uuid references public.workspaces on delete cascade, user_id uuid references public.profiles on delete cascade, role public.workspace_role not null default 'member', joined_at timestamptz not null default now(), primary key(workspace_id,user_id));
+create table public.projects (id uuid primary key default uuid_generate_v4(), workspace_id uuid not null references public.workspaces on delete cascade, name text not null, description text, color text not null default '#7c5cff', archived boolean not null default false, created_at timestamptz not null default now());
+create table public.tasks (id uuid primary key default uuid_generate_v4(), project_id uuid not null references public.projects on delete cascade, parent_id uuid references public.tasks(id) on delete cascade, title text not null, description text not null default '', priority public.task_priority not null default 'Medium', status public.task_status not null default 'To Do', due_date date, recurrence public.recurrence_rule not null default 'None', archived boolean not null default false, created_by uuid not null references public.profiles(id), assignee_id uuid references public.profiles(id), depth smallint not null default 0 check(depth between 0 and 3), created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table public.task_tags (task_id uuid references public.tasks on delete cascade, tag text not null, primary key(task_id,tag));
+create table public.comments (id uuid primary key default uuid_generate_v4(), task_id uuid not null references public.tasks on delete cascade, author_id uuid not null references public.profiles(id), body text not null, created_at timestamptz not null default now());
+create table public.activity_logs (id uuid primary key default uuid_generate_v4(), workspace_id uuid not null references public.workspaces on delete cascade, actor_id uuid not null references public.profiles(id), task_id uuid references public.tasks on delete set null, action text not null, metadata jsonb not null default '{}', created_at timestamptz not null default now());
+create index tasks_project_status_idx on public.tasks(project_id,status);
+create index tasks_due_date_idx on public.tasks(due_date) where archived = false;
+alter table public.profiles enable row level security;
+alter table public.workspaces enable row level security;
+alter table public.workspace_members enable row level security;
+alter table public.projects enable row level security;
+alter table public.tasks enable row level security;
+alter table public.comments enable row level security;
+alter table public.activity_logs enable row level security;
+create policy "workspace members can read projects" on public.projects for select using (exists(select 1 from public.workspace_members m where m.workspace_id=projects.workspace_id and m.user_id=auth.uid()));
+create policy "workspace members can read tasks" on public.tasks for select using (exists(select 1 from public.projects p join public.workspace_members m on m.workspace_id=p.workspace_id where p.id=tasks.project_id and m.user_id=auth.uid()));
+create policy "members can manage tasks" on public.tasks for all using (exists(select 1 from public.projects p join public.workspace_members m on m.workspace_id=p.workspace_id where p.id=tasks.project_id and m.user_id=auth.uid())) with check (exists(select 1 from public.projects p join public.workspace_members m on m.workspace_id=p.workspace_id where p.id=tasks.project_id and m.user_id=auth.uid()));
